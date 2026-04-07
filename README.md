@@ -81,11 +81,19 @@ Fill in your API key in `.env`.
 
 ## Usage
 
-`node index.js your_video.mkv`  
+`node index.js <input_file>`
+
+Supported input:
+- Video files (e.g., `.mkv`, `.mp4`)
+- Standalone subtitle files (e.g., `.srt`)
+
+Examples:
+- `node index.js your_video.mkv`
+- `node index.js subtitles.srt`
 
 Output:
 - Translated subtitle file  
-- New MKV file with embedded translated subtitles  
+- For video input: new MKV file with embedded translated subtitles  
 
 ---
 
