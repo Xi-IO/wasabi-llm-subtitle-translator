@@ -22,7 +22,7 @@ The system is designed to handle real-world messy subtitle data and unstable LLM
 
 | Original (English) | Processed (Chinese) |
 | :---: | :---: |
-| ![Original](./assets/Snipaste_2026-04-06_20-20-52.png) | ![Translated](./assets/Snipaste_2026-04-06_20-19-30.png) |
+| ![Original](./assets/Snipaste_2026-04-06_20-20-52.jpg) | ![Translated](./assets/Snipaste_2026-04-06_20-19-30.jpg) |
 
 <p align="center">
   <b>Figure 1:</b> Comparison showing context-aware translation of <i>Rush Hour (2001)</i>. Note the preservation of punctuation and emotional tone.

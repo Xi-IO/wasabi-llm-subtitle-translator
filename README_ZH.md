@@ -23,7 +23,7 @@
 
 | 原始（英文） | 处理后（中文） |
 | :---: | :---: |
-| ![Original](./assets/Snipaste_2026-04-06_20-20-52.png) | ![Translated](./assets/Snipaste_2026-04-06_20-19-30.png) |
+| ![Original](./assets/Snipaste_2026-04-06_20-20-52.jpg) | ![Translated](./assets/Snipaste_2026-04-06_20-19-30.jpg) |
 
 <p align="center">
   <b>图 1：</b> 展示 <i>Rush Hour (2001)</i> 的上下文感知翻译效果，对比标点与情绪表达的保留情况。
