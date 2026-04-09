@@ -90,12 +90,12 @@ Fill in your API key in `.env`.
 **Examples:**
 ```bash
 # Video file → extract, translate, remux
-node ./index(1).js "My.Movie.1080p.mkv"
-node ./index(1).js "subtitles.mp4"
+node index.js "My.Movie.1080p.mkv"
+node index.js "subtitles.mp4"
 
 # Subtitle file → translate directly
-node ./index(1).js "english_subtitles.srt"
-node ./index(1).js "subtitles.ass"
+node index.js "english_subtitles.srt"
+node index.js "subtitles.ass"
 ```
 
 **Output:**
