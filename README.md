@@ -64,7 +64,7 @@ MKV → Extract → Parse → Clean → Batch → LLM → Validate → Rebuild �
 
 ## Requirements
 
-- Node.js (v18+)  
+- [Node.js](https://nodejs.org/) (v18+)
 - ffmpeg / ffprobe installed  
 - LLM API key (Qwen, Gemini, etc.)  
 
