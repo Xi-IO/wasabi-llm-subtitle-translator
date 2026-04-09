@@ -90,26 +90,15 @@ function run(cmd, args, options = {}) {
   });
 }
 
-function stripBom(text) {
-  return text.replace(/^\uFEFF/, "");
-}
-
 function normalizeNewlines(text) {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
-function ensureArray(x) {
-  return Array.isArray(x) ? x : [];
+function stripBom(text) {
+  return text.replace(/^\uFEFF/, "");
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function safeFileStem(filePath) {
-  const parsed = path.parse(filePath);
-  return path.join(parsed.dir, parsed.name);
-}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function isEnglishLike(stream) {
   const tags = stream.tags || {};
@@ -132,20 +121,12 @@ function isForcedOrCommentary(stream) {
 // FFprobe / FFmpeg
 // =========================
 async function probeSubtitleStreams(mkvPath) {
-  const args = [
-    "-v",
-    "error",
-    "-print_format",
-    "json",
-    "-show_streams",
-    "-select_streams",
-    "s",
-    mkvPath,
-  ];
-
-  const { stdout } = await run("ffprobe", args);
+  const { stdout } = await run("ffprobe", [
+    "-v", "error", "-print_format", "json", "-show_streams",
+    "-select_streams", "s", mkvPath,
+  ]);
   const data = JSON.parse(stdout);
-  return ensureArray(data.streams);
+  return Array.isArray(data.streams) ? data.streams : [];
 }
 
 function chooseBestSubtitleStream(streams) {
@@ -233,9 +214,7 @@ function parseSrt(text) {
 }
 
 function buildSrt(entries) {
-  return entries
-    .map((e, i) => `${i + 1}\n${e.timeLine}\n${e.text}`)
-    .join("\n\n") + "\n";
+  return entries.map((e, i) => `${i + 1}\n${e.timeLine}\n${e.text}`).join("\n\n") + "\n";
 }
 
 // =========================
@@ -334,10 +313,7 @@ function buildAss(header, parsedEvents) {
 // 可翻译文本抽取
 // =========================
 function cleanSubtitleTextForTranslation(text) {
-  return text
-    .replace(/\{\\[^}]+\}/g, "") // ASS override tags
-    .replace(/<[^>]+>/g, "")
-    .trim();
+  return text.replace(/\{\\[^}]+\}/g, "").replace(/<[^>]+>/g, "").trim();
 }
 
 function collectTranslatableItems(format, data) {
@@ -406,56 +382,22 @@ function createClient() {
 }
 
 function buildMessages(batch) {
+  const systemPrompt = `You are a subtitle translator. Translate English subtitles into natural, context-aware Simplified Chinese.
+Style: Choose appropriate register (colloquial/formal/literary/archaic). Preserve tone, attitude, intensity. Translate profanity faithfully.
+Strict rules: 1. Preserve item count exactly 2. Preserve each id exactly 3. Do not merge/split items 4. Output ONLY valid JSON array 5. No markdown/explanations 6. Format: [{"id":"...","translation":"..."}] 7. Valid JSON strings only 8. No unescaped line breaks
+Return ONLY the JSON array.`;
+  
   return [
-    {
-      role: "system",
-      content: `
-        You are a subtitle translator.
-
-        Translate English subtitles into natural, context-aware Simplified Chinese.
-
-        Style requirements:
-        - Choose the appropriate register based on context: colloquial, formal, literary, or archaic.
-        - Dialogue must sound like real spoken Chinese when the original is conversational.
-        - Preserve tone, attitude, and intensity.
-        - Profanity, insults, and offensive language must be translated faithfully and naturally.
-        - Do not sanitize or soften the tone.
-        - Avoid unnatural or overly literal translations.
-
-        Strict rules:
-        1. Preserve item count exactly
-        2. Preserve each id exactly
-        3. Do not merge or split items
-        4. Output ONLY a valid JSON array
-        5. Do not output markdown
-        6. Do not output explanations
-        7. Each element must be:
-          {"id":"...","translation":"..."}
-        8. All strings must be valid JSON strings (escape quotes properly)
-        9. Do not include unescaped line breaks inside strings
-
-        Return ONLY the JSON array.
-        `.trim(),
-    },
-    {
-      role: "user",
-      content: JSON.stringify(
-        batch.map((x) => ({ id: x.key, text: x.cleaned })),
-        null,
-        2,
-      ),
-    },
+    { role: "system", content: systemPrompt },
+    { role: "user", content: JSON.stringify(batch.map((x) => ({ id: x.key, text: x.cleaned })), null, 2) },
   ];
 }
 
 function extractJsonArray(text) {
   const trimmed = text.trim();
-  if (trimmed.startsWith("[")) return trimmed;
-
-  const match = trimmed.match(/\[[\s\S]*\]/);
-  if (match) return match[0];
-
-  throw new Error("Model response does not contain a JSON array.");
+  const match = trimmed.startsWith("[") ? trimmed : (trimmed.match(/\[[\s\S]*\]/) || [])[0];
+  if (!match) throw new Error("Model response does not contain a JSON array.");
+  return match;
 }
 
 async function translateBatch(client, batch) {
@@ -478,23 +420,20 @@ async function translateBatch(client, batch) {
 
 async function translateAll(items, cachePath) {
   const client = createClient();
-  const existing = await loadCache(cachePath);
+  const existing = await cache.load(cachePath);
   const done = new Map(Object.entries(existing));
   const pending = items.filter((x) => !done.has(x.key));
   const batches = makeBatches(pending);
 
-  console.log(`待翻译条目: ${pending.length}`);
-  console.log(`批次数: ${batches.length}`);
+  console.log(`待翻译条目: ${pending.length}\n批次数: ${batches.length}`);
 
   for (let i = 0; i < batches.length; i++) {
-    const batch = batches[i];
     let success = false;
-
     for (let attempt = 1; attempt <= CONFIG.retry; attempt++) {
       try {
-        const translated = await translateBatch(client, batch);
+        const translated = await translateBatch(client, batches[i]);
         for (const row of translated) done.set(row.key, row.translation);
-        await saveCache(cachePath, Object.fromEntries(done));
+        await cache.save(cachePath, Object.fromEntries(done));
         console.log(`批次 ${i + 1}/${batches.length} 完成`);
         success = true;
         break;
@@ -503,27 +442,12 @@ async function translateAll(items, cachePath) {
         if (attempt < CONFIG.retry) await sleep(1500 * attempt);
       }
     }
-
-    if (!success) {
-      throw new Error(`Batch ${i + 1} failed after ${CONFIG.retry} retries.`);
-    }
+    if (!success) throw new Error(`Batch ${i + 1} failed after ${CONFIG.retry} retries.`);
   }
-
   return Object.fromEntries(done);
 }
 
-async function loadCache(cachePath) {
-  try {
-    const raw = await fs.readFile(cachePath, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-
-async function saveCache(cachePath, data) {
-  await fs.writeFile(cachePath, JSON.stringify(data, null, 2), "utf8");
-}
+const cache = { load: (p) => fs.readFile(p, "utf8").then(r => JSON.parse(r)).catch(() => ({})), save: (p, d) => fs.writeFile(p, JSON.stringify(d, null, 2), "utf8") };
 
 // =========================
 // 回写翻译结果
@@ -596,41 +520,88 @@ async function muxSubtitle(inputPath, subtitlePath, outputPath) {
 async function main() {
   const inputArg = process.argv[2];
   if (!inputArg) {
-    console.error("用法: 把 mkv 文件拖到脚本上，或执行 node mkv_subtitle_translate.js your_video.mkv");
+    console.error("用法: 把文件拖到脚本上，或执行 node index(1).js your_file.mkv/.srt/.ass");
     process.exit(1);
   }
 
-  const mkvPath = path.resolve(inputArg);
-  const stem = safeFileStem(mkvPath);
+  const inputPath = path.resolve(inputArg);
+  const fileName = path.basename(inputPath);
+  const baseName = path.parse(fileName).name;
+  const fileExt = path.extname(fileName).toLowerCase();
 
-  console.log(`输入文件: ${mkvPath}`);
-
-  const streams = await probeSubtitleStreams(mkvPath);
-  if (streams.length === 0) {
-    throw new Error("这个 MKV 没有字幕流。");
+  // 检测文件类型
+  const isMkv = fileExt === '.mkv';
+  const isSrt = fileExt === '.srt';
+  const isAss = fileExt === '.ass' || fileExt === '.ssa';
+  
+  if (!isMkv && !isSrt && !isAss) {
+    throw new Error(`不支持的文件格式: ${fileExt}。仅支持 .mkv、.srt、.ass`);
   }
 
-  const chosen = chooseBestSubtitleStream(streams);
-  if (!chosen) {
-    const codecs = streams.map((s) => s.codec_name).join(", ");
-    throw new Error(
-      `没有找到可直接处理的文本英文字幕流。当前字幕编码: ${codecs}。图形字幕如 PGS/VobSub 需要 OCR。`,
+  // 定义文件夹路径
+  const inputDir = path.join(process.cwd(), 'input');
+  const outputDir = path.join(process.cwd(), 'output');
+  const cacheDir = path.join(process.cwd(), 'cache');
+  const tempDir = path.join(process.cwd(), 'temp');
+
+  // 创建文件夹
+  await fs.mkdir(inputDir, { recursive: true });
+  await fs.mkdir(outputDir, { recursive: true });
+  await fs.mkdir(cacheDir, { recursive: true });
+  await fs.mkdir(tempDir, { recursive: true });
+
+  // 为每个视频新建子文件夹
+  const inputSubDir = path.join(inputDir, baseName);
+  const outputSubDir = path.join(outputDir, baseName);
+  await fs.mkdir(inputSubDir, { recursive: true });
+  await fs.mkdir(outputSubDir, { recursive: true });
+
+  const inputMkvPath = inputPath;
+  console.log(`输入文件: ${inputMkvPath}`);
+
+  let format;
+  let rawText;
+
+  // 根据文件类型处理
+  if (isMkv) {
+    // MKV: 提取字幕
+    const streams = await probeSubtitleStreams(inputMkvPath);
+    if (streams.length === 0) {
+      throw new Error("这个 MKV 没有字幕流。");
+    }
+
+    const chosen = chooseBestSubtitleStream(streams);
+    if (!chosen) {
+      const codecs = streams.map((s) => s.codec_name).join(", ");
+      throw new Error(
+        `没有找到可直接处理的文本英文字幕流。当前字幕编码: ${codecs}。图形字幕如 PGS/VobSub 需要 OCR。`,
+      );
+    }
+
+    console.log(
+      `选中字流: index=${chosen.index}, codec=${chosen.codec_name}, language=${chosen.tags?.language || "unknown"}`,
     );
+
+    const extractedExt = chosen.codec_name === "ass" || chosen.codec_name === "ssa" ? ".ass" : ".srt";
+    
+    const tempSubDir = path.join(tempDir, baseName);
+    await fs.mkdir(tempSubDir, { recursive: true });
+    
+    const extractedPath = path.resolve(path.join(tempSubDir, `${baseName}.extracted${extractedExt}`));
+    format = await extractSubtitle(inputMkvPath, chosen, extractedPath);
+    console.log(`已导出字幕: ${extractedPath}`);
+    rawText = await fs.readFile(extractedPath, "utf8");
+  } else if (isSrt || isAss) {
+    // SRT/ASS: 直接读取
+    console.log(`直接处理 ${fileExt.toUpperCase()} 字幕文件`);
+    format = isSrt ? "srt" : fileExt.substring(1).toLowerCase();
+    rawText = await fs.readFile(inputMkvPath, "utf8");
   }
 
-  console.log(
-    `选中字流: index=${chosen.index}, codec=${chosen.codec_name}, language=${chosen.tags?.language || "unknown"}`,
-  );
-
-  const extractedExt = chosen.codec_name === "ass" || chosen.codec_name === "ssa" ? ".ass" : ".srt";
-  const extractedPath = `${stem}.extracted${extractedExt}`;
-  const translatedPath = `${stem}.${CONFIG.outputSuffix}${extractedExt}`;
-  const cachePath = `${stem}.translate-cache.json`;
-
-  const format = await extractSubtitle(mkvPath, chosen, extractedPath);
-  console.log(`已导出字幕: ${extractedPath}`);
-
-  const rawText = await fs.readFile(extractedPath, "utf8");
+  // 定义输出路径
+  const outputExt = format === "srt" ? ".srt" : format;
+  const translatedPath = path.resolve(path.join(outputSubDir, `${baseName}.${CONFIG.outputSuffix}${outputExt}`));
+  const cachePath = path.resolve(path.join(cacheDir, `${baseName}.translate-cache.json`));
 
   let parsed;
   if (format === "srt") parsed = parseSrt(rawText);
@@ -648,15 +619,32 @@ async function main() {
   console.log(`翻译完成: ${translatedPath}`);
   console.log(`缓存文件: ${cachePath}`);
 
-  const outputMkv = mkvPath.replace(/\.mkv$/i, ".zh.mkv");
+  // 只有 MKV 输入才需要封装
+  if (isMkv) {
+    const outputMkv = path.resolve(path.join(outputSubDir, `${baseName}.zh.mkv`));
+    await muxSubtitle(inputMkvPath, translatedPath, outputMkv);
+    console.log(`已封装: ${outputMkv}`);
+  }
 
-  await muxSubtitle(
-    mkvPath,
-    translatedPath,
-    outputMkv
-  );
+  // 将输入文件移到input子文件夹
+  try {
+    const finalInputPath = path.join(inputSubDir, fileName);
+    if (inputPath !== finalInputPath) {
+      await fs.rename(inputPath, finalInputPath);
+      console.log(`输入文件已移到: ${finalInputPath}`);
+    }
+  } catch (err) {
+    console.warn(`无法移动输入文件: ${err.message}`);
+  }
 
-  console.log(`已封装: ${outputMkv}`);
+  // 任务完成后清除缓存和临时文件
+  try {
+    await fs.rm(cacheDir, { recursive: true, force: true });
+    await fs.rm(tempDir, { recursive: true, force: true });
+    console.log("缓存和临时文件已清除。");
+  } catch (err) {
+    console.warn("清除缓存和临时文件时出错:", err.message);
+  }
 }
 
 main().catch((err) => {

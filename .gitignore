@@ -22,6 +22,9 @@ node_modules/
 *.tmp
 *.temp
 /temp/
+/cache/
+/input/
+/output/
 
 # --- 电子书相关 (如果你本地还在测试这个) ---
 *.epub

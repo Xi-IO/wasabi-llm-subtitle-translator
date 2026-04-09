@@ -81,19 +81,45 @@ Fill in your API key in `.env`.
 
 ## Usage
 
-`node index.js <input_file>`
+`node ./index(1).js <input_file>`
 
-Supported input:
-- Video files (e.g., `.mkv`, `.mp4`)
-- Standalone subtitle files (e.g., `.srt`)
+**Supported input formats:**
+- Video files with subtitles: `.mkv`, `.mp4`, `.avi`, `.mov`, `.flv`
+- Standalone subtitle files: `.srt`, `.ass`, `.ssa`
 
-Examples:
-- `node index.js your_video.mkv`
-- `node index.js subtitles.srt`
+**Examples:**
+```bash
+# Video file → extract, translate, remux
+node ./index(1).js "My.Movie.1080p.mkv"
+node ./index(1).js "subtitles.mp4"
 
-Output:
-- Translated subtitle file  
-- For video input: new MKV file with embedded translated subtitles  
+# Subtitle file → translate directly
+node ./index(1).js "english_subtitles.srt"
+node ./index(1).js "subtitles.ass"
+```
+
+**Output:**
+- **Video input (.mkv/.mp4)**: 
+  - Translated subtitle file: `output/<video_name>/<video_name>.zh.srt`
+  - New video with embedded subtitles: `output/<video_name>/<video_name>.zh.mkv`
+  
+- **Subtitle input (.srt/.ass)**: 
+  - Translated subtitle file: `output/<subtitle_name>/<subtitle_name>.zh.srt` (or `.zh.ass`)
+
+**File Organization:**
+```
+input/
+  ├─ <filename>/
+  │  └─ <original_file>  (input files moved here after processing)
+output/
+  ├─ <filename>/
+  │  ├─ <filename>.zh.srt  (translated subtitles)
+  │  └─ <filename>.zh.mkv  (remuxed video, only for video input)
+cache/
+  └─ (auto-deleted after completion)
+temp/
+  └─ (auto-deleted after completion)
+```
 
 ---
 
