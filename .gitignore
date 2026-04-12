@@ -46,3 +46,6 @@ Thumbs.db
 .idea/
 
 *.zip
+
+# --- 本地测试目录 ---
+/tests/
