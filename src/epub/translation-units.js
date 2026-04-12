@@ -181,16 +181,32 @@ export function extractTranslationUnits(chapter, diagnostics = null) {
   return units;
 }
 
-export function applyTranslationUnits(chapter, translationMap, chapterUnits = []) {
+export function applyTranslationUnits(chapter, translationMap, chapterUnits = [], diagnostics = null) {
   const nodeIndex = collectNodeIndex(chapter.document);
+  const stats = {
+    chapter: chapter.entryName,
+    totalUnits: chapterUnits.length,
+    appliedUnits: 0,
+    skippedMissingTranslation: 0,
+    skippedInvalidPlaceholder: 0,
+  };
 
   for (const unit of chapterUnits) {
     const translated = translationMap[unit.key];
-    if (!translated) continue;
-    if (!Array.isArray(unit.placeholderMap) || unit.placeholderMap.length === 0) continue;
+    if (!translated) {
+      stats.skippedMissingTranslation += 1;
+      continue;
+    }
+    if (!Array.isArray(unit.placeholderMap) || unit.placeholderMap.length === 0) {
+      stats.skippedInvalidPlaceholder += 1;
+      continue;
+    }
 
     const segments = extractSegmentsByPlaceholders(String(translated), unit.placeholderMap);
-    if (!segments) continue;
+    if (!segments) {
+      stats.skippedInvalidPlaceholder += 1;
+      continue;
+    }
 
     for (const placeholder of unit.placeholderMap) {
       const textNode = nodeIndex.get(placeholder.nodeId);
@@ -198,6 +214,15 @@ export function applyTranslationUnits(chapter, translationMap, chapterUnits = []
         textNode.text = segments.get(placeholder.nodeId) ?? textNode.text;
       }
     }
+    stats.appliedUnits += 1;
+  }
+
+  if (diagnostics && typeof diagnostics === "object") {
+    diagnostics.chapter = stats.chapter;
+    diagnostics.totalUnits = stats.totalUnits;
+    diagnostics.appliedUnits = stats.appliedUnits;
+    diagnostics.skippedMissingTranslation = stats.skippedMissingTranslation;
+    diagnostics.skippedInvalidPlaceholder = stats.skippedInvalidPlaceholder;
   }
 
   return chapter;

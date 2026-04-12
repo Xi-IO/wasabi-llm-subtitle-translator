@@ -278,9 +278,27 @@ test("epub: reconstructed chapter remains parseable and mapping remains 1:1", ()
   const translationMap = {
     [units[0].key]: translateProtectedText(units[0].sourceText, (txt) => `译:${txt}`),
   };
-  applyTranslationUnits(chapter, translationMap, units);
+  const diagnostics = {};
+  applyTranslationUnits(chapter, translationMap, units, diagnostics);
   const rendered = renderDocument(chapter.document);
   const reparsed = parseChapterDocument("chapter-reparse", rendered);
   assert.equal(Array.isArray(reparsed.children), true);
   assert.equal(rendered.includes("<blockquote>"), true);
+  assert.equal(diagnostics.totalUnits, 1);
+  assert.equal(diagnostics.appliedUnits, 1);
+});
+
+test("epub: apply diagnostics detect placeholder mismatch skips", () => {
+  const chapter = makeChapter("<html><body><p>Hello</p></body></html>");
+  const units = extractTranslationUnits(chapter);
+  const diagnostics = {};
+  applyTranslationUnits(
+    chapter,
+    { [units[0].key]: "broken-without-placeholders" },
+    units,
+    diagnostics,
+  );
+  assert.equal(diagnostics.totalUnits, 1);
+  assert.equal(diagnostics.appliedUnits, 0);
+  assert.equal(diagnostics.skippedInvalidPlaceholder, 1);
 });

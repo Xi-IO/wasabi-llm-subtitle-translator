@@ -56,9 +56,28 @@ export function applyEpubTranslations(epubDoc, items, translationMap) {
     unitsByChapter.set(item.chapter, bucket);
   }
 
+  const rollup = {
+    totalUnits: 0,
+    appliedUnits: 0,
+    skippedMissingTranslation: 0,
+    skippedInvalidPlaceholder: 0,
+  };
+
   epubDoc.chapters.forEach((chapter) => {
-    applyTranslationUnits(chapter, translationMap, unitsByChapter.get(chapter.entryName) || []);
+    const diagnostics = {};
+    applyTranslationUnits(chapter, translationMap, unitsByChapter.get(chapter.entryName) || [], diagnostics);
+    rollup.totalUnits += diagnostics.totalUnits || 0;
+    rollup.appliedUnits += diagnostics.appliedUnits || 0;
+    rollup.skippedMissingTranslation += diagnostics.skippedMissingTranslation || 0;
+    rollup.skippedInvalidPlaceholder += diagnostics.skippedInvalidPlaceholder || 0;
+
+    console.log(
+      `[EPUB回填] ${chapter.entryName}: total=${diagnostics.totalUnits || 0}, applied=${diagnostics.appliedUnits || 0}, missing=${diagnostics.skippedMissingTranslation || 0}, placeholder=${diagnostics.skippedInvalidPlaceholder || 0}`,
+    );
   });
+  console.log(
+    `[EPUB回填汇总] total=${rollup.totalUnits}, applied=${rollup.appliedUnits}, missing=${rollup.skippedMissingTranslation}, placeholder=${rollup.skippedInvalidPlaceholder}`,
+  );
 
   return epubDoc;
 }
