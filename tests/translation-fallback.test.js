@@ -244,8 +244,21 @@ test("epub: non-block nested tags are preserved while text is still translated",
 
 test("epub: nested block structures are skipped conservatively", () => {
   const chapter = makeChapter("<html><body><ul><li>outer<p>inner</p></li></ul></body></html>");
-  const units = extractTranslationUnits(chapter);
+  const diagnostics = {};
+  const units = extractTranslationUnits(chapter, diagnostics);
   assert.equal(units.length, 0);
+  assert.equal(diagnostics.blockCandidates, 1);
+  assert.equal(diagnostics.skippedReasons["nested-block-structure"], 1);
+});
+
+test("epub: extraction diagnostics count empty-text skips", () => {
+  const chapter = makeChapter("<html><body><p>   </p><p>filled</p></body></html>");
+  const diagnostics = {};
+  const units = extractTranslationUnits(chapter, diagnostics);
+  assert.equal(units.length, 1);
+  assert.equal(diagnostics.blockCandidates, 2);
+  assert.equal(diagnostics.producedUnits, 1);
+  assert.equal(diagnostics.skippedReasons["empty-text"], 1);
 });
 
 test("epub: reconstructed chapter remains parseable and mapping remains 1:1", () => {

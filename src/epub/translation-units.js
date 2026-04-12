@@ -32,6 +32,10 @@ function collectNodeIndex(root) {
   return index;
 }
 
+function incrementReason(reasons, reason) {
+  reasons[reason] = (reasons[reason] || 0) + 1;
+}
+
 function hasNestedBlockStructure(blockNode) {
   function walk(node, isRoot = false) {
     if (node.type !== "element") return false;
@@ -103,8 +107,14 @@ function extractSegmentsByPlaceholders(text, placeholderMap) {
   return segments;
 }
 
-export function extractTranslationUnits(chapter) {
+export function extractTranslationUnits(chapter, diagnostics = null) {
   const units = [];
+  const stats = {
+    chapter: chapter.entryName,
+    blockCandidates: 0,
+    producedUnits: 0,
+    skippedReasons: {},
+  };
 
   function walk(node) {
     if (!isElement(node)) {
@@ -113,6 +123,7 @@ export function extractTranslationUnits(chapter) {
     }
 
     if (BLOCK_TAGS.has(node.tagName)) {
+      stats.blockCandidates += 1;
       if (!hasNestedBlockStructure(node)) {
         const textNodes = collectTextNodes(node);
         if (textNodes.length > 0) {
@@ -126,7 +137,12 @@ export function extractTranslationUnits(chapter) {
             blockNodeId: node.id,
             placeholderMap,
           });
+          stats.producedUnits += 1;
+        } else {
+          incrementReason(stats.skippedReasons, "empty-text");
         }
+      } else {
+        incrementReason(stats.skippedReasons, "nested-block-structure");
       }
       return;
     }
@@ -136,6 +152,12 @@ export function extractTranslationUnits(chapter) {
   }
 
   walk(chapter.document);
+  if (diagnostics && typeof diagnostics === "object") {
+    diagnostics.chapter = stats.chapter;
+    diagnostics.blockCandidates = stats.blockCandidates;
+    diagnostics.producedUnits = stats.producedUnits;
+    diagnostics.skippedReasons = { ...stats.skippedReasons };
+  }
   return units;
 }
 
