@@ -2,6 +2,11 @@ import "dotenv/config";
 import fs from "fs/promises";
 
 import { parseCliArgs, targetSuffix } from "./src/cli/args.js";
+import {
+  buildChapterIndexList,
+  resolveChapterSelector,
+  formatChapterSelection,
+} from "./src/cli/chapter-selector.js";
 import { CONFIG, languageLabel } from "./src/config/runtime.js";
 import { muxSubtitle } from "./src/media/ffmpeg.js";
 import { collectTranslatableItems, applyTranslations } from "./src/subtitles/translation-items.js";
@@ -39,7 +44,42 @@ async function main() {
 
     if (isEpub) {
       const epubDoc = loadEpubDocument(workspace.inputPath);
-      const items = extractEpubItems(epubDoc);
+      const chapterIndexList = buildChapterIndexList(epubDoc.chapters);
+      let selectedChapterSet = null;
+
+      if (langOptions.chapterSelector) {
+        selectedChapterSet = resolveChapterSelector(langOptions.chapterSelector, chapterIndexList);
+      }
+
+      const selectedChapters = selectedChapterSet
+        ? formatChapterSelection(selectedChapterSet, chapterIndexList)
+        : chapterIndexList;
+
+      if (selectedChapters.length === 0) {
+        throw new Error("--chap 没有选中任何章节。请检查选择器。");
+      }
+
+      console.log("已选章节:");
+      selectedChapters.forEach((chapter) => {
+        console.log(`- [${chapter.index}] ${chapter.title} (${chapter.file})`);
+      });
+
+      if (langOptions.dryRun) {
+        console.log("Dry run 模式：仅打印章节选择，不执行翻译。");
+        await cleanupWorkspace(workspace);
+        await runLogger.finalize({ success: true, summary: { ...runSummary, dryRun: true } });
+        unregisterCrashHooks();
+        return;
+      }
+
+      const workingDoc = selectedChapterSet
+        ? {
+          ...epubDoc,
+          chapters: epubDoc.chapters.filter((_, idx) => selectedChapterSet.has(idx + 1)),
+        }
+        : epubDoc;
+
+      const items = extractEpubItems(workingDoc);
       if (items.length === 0) throw new Error("EPUB 中没有找到可翻译段落。");
 
       const { translatedPath, cachePath } = buildJobPaths(
@@ -53,12 +93,19 @@ async function main() {
         verboseFailures: runLogger.verboseFailures,
         runSummary,
       });
-      applyEpubTranslations(epubDoc, translationMap);
+      applyEpubTranslations(workingDoc, translationMap);
       writeEpubDocument(epubDoc, translatedPath);
 
       console.log(`翻译完成: ${translatedPath}`);
       console.log(`缓存文件: ${cachePath}`);
     } else {
+      if (langOptions.chapterSelector) {
+        throw new Error("--chap 仅支持 EPUB 输入文件。");
+      }
+      if (langOptions.dryRun) {
+        throw new Error("--dry-run 当前仅支持 EPUB 章节预览。");
+      }
+
       const { isMkv, format, rawText } = await loadSubtitleInput(workspace);
 
       const { translatedPath, cachePath, outputMkv } = buildJobPaths(

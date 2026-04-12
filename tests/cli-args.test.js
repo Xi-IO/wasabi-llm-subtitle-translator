@@ -21,3 +21,18 @@ test("parseCliArgs rejects invalid concurrency", async () => {
     /--concurrency 必须是大于等于 1 的整数/,
   );
 });
+
+test("parseCliArgs supports --chap and --dry-run", async () => {
+  const parseCliArgs = await loadParseCliArgs();
+  const { opts } = parseCliArgs(["book.epub", "--chap", "'Introduction'", "--dry-run"]);
+  assert.equal(opts.chapterSelector, "'Introduction'");
+  assert.equal(opts.dryRun, true);
+});
+
+test("--chap takes priority even when TEST_MODE is set", async () => {
+  process.env.TEST_MODE = "1";
+  const parseCliArgs = await loadParseCliArgs();
+  const { opts } = parseCliArgs(["book.epub", "--chap", "2-3"]);
+  assert.equal(opts.chapterSelector, "2-3");
+  delete process.env.TEST_MODE;
+});
