@@ -11,6 +11,9 @@ export function parseCliArgs(argv) {
     from: CONFIG.defaultSourceLanguage,
     to: CONFIG.defaultTargetLanguage,
     verboseFailures: false,
+    concurrency: CONFIG.translationConcurrency,
+    chapterSelector: null,
+    dryRun: false,
   };
   let input = null;
 
@@ -29,6 +32,27 @@ export function parseCliArgs(argv) {
       opts.verboseFailures = true;
       continue;
     }
+    if (token === "--concurrency") {
+      const raw = args[++i];
+      const parsed = Number(raw);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        throw new Error("--concurrency 必须是大于等于 1 的整数。");
+      }
+      opts.concurrency = parsed;
+      continue;
+    }
+    if (token === "--chap") {
+      const selector = args[++i];
+      if (!selector) {
+        throw new Error("--chap 需要提供选择器（例如 1-3,\"Introduction\"）。");
+      }
+      opts.chapterSelector = selector;
+      continue;
+    }
+    if (token === "--dry-run") {
+      opts.dryRun = true;
+      continue;
+    }
     if (token.startsWith("--")) {
       throw new Error(`Unknown option: ${token}`);
     }
@@ -37,7 +61,7 @@ export function parseCliArgs(argv) {
   }
 
   if (!input) {
-    throw new Error("用法: node index.js <input_file> [--to zh-CN] [--from auto] [--verbose-failures]");
+    throw new Error("用法: node index.js <input_file> [--to zh-CN] [--from auto] [--concurrency 4] [--chap <selector>] [--dry-run] [--verbose-failures]");
   }
 
   opts.from = normalizeLangCode(opts.from, CONFIG.defaultSourceLanguage);

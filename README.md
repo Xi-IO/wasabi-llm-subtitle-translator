@@ -81,7 +81,7 @@ Fill in your API key in `.env`.
 
 ## Usage
 
-`node index.js <input_file> [--to target_lang] [--from source_lang]`
+`node index.js <input_file> [--to target_lang] [--from source_lang] [--concurrency 4] [--chap <selector>] [--dry-run]`
 
 If you omit language options, the default is:
 `node index.js <input_file> --to zh-CN`
@@ -94,6 +94,9 @@ If you omit language options, the default is:
 **Language options:**
 - `--to`: target language (default: `zh-CN`)
 - `--from`: source language (default: `auto`, model decides)
+- `--concurrency`: set request concurrency for this run (default from env `TRANSLATION_CONCURRENCY`, fallback `4`)
+- `--chap`: EPUB chapter selector (e.g. `3`, `1-3,7`, `'Introduction'`, `'Introduction'-'Conclusion'`)
+- `--dry-run`: resolve and print selected EPUB chapters without translation
 - `--verbose-failures`: print more per-node details on batch failures/retries
 - Common target language examples: `zh-CN`, `fr`, `ru`, `ja`, `ko`, `es`
 
@@ -111,6 +114,15 @@ node index.js "subtitles.ass"
 
 # EPUB file → output translated EPUB
 node index.js "book.epub"
+
+# Use 4 concurrent translation requests in this run
+node index.js "book.epub" --concurrency 4
+
+# Translate selected EPUB chapters only
+node index.js "book.epub" --chap "1-3,'Introduction','Chapter Five'-'Appendix',9"
+
+# Preview selected EPUB chapters without translation
+node index.js "book.epub" --chap "'Introduction'-'Conclusion'" --dry-run
 
 # Set target language (e.g. Japanese)
 node index.js "english_subtitles.srt" --to ja
