@@ -127,6 +127,39 @@ test("successful nodes persist incrementally when some nodes fail", async () => 
   );
 });
 
+test("cached unresolved nodes are retried on next run", async () => {
+  const { translateAll } = await loadTranslationModule();
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "translation-retry-unresolved-"));
+  const cachePath = path.join(dir, "cache.json");
+  await fs.writeFile(cachePath, JSON.stringify({
+    "1": {
+      id: "1",
+      sourceText: "alpha",
+      translation: "alpha",
+      status: "unresolved",
+      reasons: ["fallback-to-source"],
+      attempts: { batch: 3, single: 3, repair: 0 },
+      error: { type: "Error", message: "previous failure" },
+    },
+  }, null, 2), "utf8");
+
+  let calls = 0;
+  const output = await translateAll(makeItems(), cachePath, { from: "en", to: "zh-cn" }, {
+    batchRetryDelayMs: 0,
+    singleRetryDelayMs: 0,
+    concurrency: 1,
+    enableRepair: false,
+    persistNodeResults: true,
+    batchTranslator: async (batch) => {
+      calls += 1;
+      return batch.map((item) => ({ id: item.key, translation: `retry-${item.text}` }));
+    },
+  });
+
+  assert.equal(calls > 0, true);
+  assert.equal(output["1"], "retry-alpha");
+});
+
 test("heuristics detect mixed-language residue and glossary artifacts", () => {
   const mixed = evaluateNodeQuality({
     sourceText: "This paragraph is long enough to trigger quality checks and should be translated.",

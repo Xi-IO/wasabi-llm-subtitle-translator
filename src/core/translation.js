@@ -249,7 +249,11 @@ export async function translateAll(items, cachePath, langOptions, options = {}) 
     }
   }
 
-  const pending = items.filter((x) => !done.has(String(x.key)));
+  const pending = items.filter((x) => {
+    const cached = done.get(String(x.key));
+    if (!cached) return true;
+    return cached.status === "unresolved";
+  });
   const batches = makeBatches(pending);
   const cacheMutex = new Mutex();
   const concurrency = Math.max(1, Number(options.concurrency ?? CONFIG.translationConcurrency) || 1);
