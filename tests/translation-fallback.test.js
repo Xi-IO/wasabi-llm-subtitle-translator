@@ -197,47 +197,47 @@ test("epub codec: sid completeness is strict (missing/duplicate/unexpected fail)
   assert.equal(normalized, "{\"segments\":[{\"sid\":\"S0\",\"text\":\"你好\"},{\"sid\":\"S1\",\"text\":\"世界\"}]}");
 });
 
-test("epub codec prints compact sid debug only on failure", async () => {
+test("epub codec dumps compact sid debug file only on failure", async () => {
   const { buildEpubTranslationCodecs } = await loadEpubAdapterModule();
   const codecs = buildEpubTranslationCodecs();
+  const debugDir = await fs.mkdtemp(path.join(os.tmpdir(), "epub-failure-debug-"));
+  process.env.EPUB_FAILURE_DEBUG_DIR = debugDir;
   process.env.EPUB_SEGMENT_DEBUG = "1";
-  const warnings = [];
-  const originalWarn = console.warn;
-  console.warn = (...args) => warnings.push(args.map((entry) => String(entry)).join(" "));
+  const item = {
+    key: "OEBPS/ch1.xhtml::n407::part2",
+    mode: "complex",
+    segmentMap: [{ sid: "S0" }, { sid: "S1" }],
+    sourceText: JSON.stringify({
+      segments: [
+        { sid: "S0", text: "hello" },
+        { sid: "S1", text: "world" },
+      ],
+    }),
+  };
 
-  try {
-    const item = {
-      key: "OEBPS/ch1.xhtml::n407::part2",
-      mode: "complex",
-      segmentMap: [{ sid: "S0" }, { sid: "S1" }],
-      sourceText: JSON.stringify({
-        segments: [
-          { sid: "S0", text: "hello" },
-          { sid: "S1", text: "world" },
-        ],
-      }),
-    };
+  assert.throws(
+    () => codecs.deserializeTranslation(item, { id: "epub-1", segments: [{ sid: "S0", text: "你好" }] }),
+    /sid missing/i,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const failureFiles = await fs.readdir(debugDir);
+  assert.equal(failureFiles.length, 1);
+  const debugPayload = JSON.parse(await fs.readFile(path.join(debugDir, failureFiles[0]), "utf8"));
+  assert.equal(debugPayload.itemKey, item.key);
+  assert.deepEqual(debugPayload.diff.missing, ["S1"]);
+  assert.deepEqual(debugPayload.missingDetails, [{ sid: "S1", text: "world" }]);
+  assert.equal(debugPayload.mode, "complex");
 
-    assert.throws(
-      () => codecs.deserializeTranslation(item, { id: "epub-1", segments: [{ sid: "S0", text: "你好" }] }),
-      /sid missing/i,
-    );
-    assert.equal(warnings.length, 1);
-    const payload = JSON.parse(warnings[0].replace(/^[^\{]*/, ""));
-    assert.equal(payload.itemKey, item.key);
-    assert.deepEqual(payload.diff.missing, ["S1"]);
-    assert.deepEqual(payload.missingDetails, [{ sid: "S1", text: "world" }]);
-    assert.equal(payload.mode, "complex");
+  codecs.deserializeTranslation(item, {
+    id: "epub-1",
+    segments: [{ sid: "S0", text: "你好" }, { sid: "S1", text: "世界" }],
+  });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const filesAfterSuccess = await fs.readdir(debugDir);
+  assert.equal(filesAfterSuccess.length, 1);
 
-    codecs.deserializeTranslation(item, {
-      id: "epub-1",
-      segments: [{ sid: "S0", text: "你好" }, { sid: "S1", text: "世界" }],
-    });
-    assert.equal(warnings.length, 1);
-  } finally {
-    console.warn = originalWarn;
-    delete process.env.EPUB_SEGMENT_DEBUG;
-  }
+  delete process.env.EPUB_FAILURE_DEBUG_DIR;
+  delete process.env.EPUB_SEGMENT_DEBUG;
 });
 
 test("epub sid missing routes into fallback and can recover in single-node retry", async () => {

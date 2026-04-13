@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import path from "path";
 import OpenAI from "openai";
 import { DEFAULT_EPUB_PROMPT_PATH, translateAll } from "../../core/translation.js";
 import { CONFIG, languageLabel } from "../../config/runtime.js";
@@ -12,6 +13,17 @@ const EPUB_MISSING_SEGMENTS_PROMPT_PATH = new URL("../../../prompts/epub_missing
 function isEpubSegmentDebugEnabled() {
   const flag = String(process.env.EPUB_SEGMENT_DEBUG || "").trim().toLowerCase();
   return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
+}
+
+function resolveEpubFailureDebugDir() {
+  return process.env.EPUB_FAILURE_DEBUG_DIR || path.join(process.cwd(), "debug", "epub-failures");
+}
+
+function sanitizeDebugName(value) {
+  return String(value || "unknown")
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80) || "unknown";
 }
 
 function parseExpectedSegments(sourceText) {
@@ -33,7 +45,7 @@ function calcAverageSegmentLength(segments) {
   return Number((total / segments.length).toFixed(2));
 }
 
-function dumpEpubFailureDebug({
+async function dumpEpubFailureDebug({
   item,
   expectedSegments,
   actualSegments,
@@ -67,9 +79,14 @@ function dumpEpubFailureDebug({
         actualAvgLen: calcAverageSegmentLength(actualSegments),
       },
     };
-    console.warn("[EPUB segment debug]", JSON.stringify(debugPayload));
+    const debugDir = resolveEpubFailureDebugDir();
+    await fs.mkdir(debugDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const safeKey = sanitizeDebugName(item?.key);
+    const outputPath = path.join(debugDir, `${timestamp}-${safeKey}.json`);
+    await fs.writeFile(outputPath, JSON.stringify(debugPayload, null, 2), "utf8");
   } catch {
-    // Debug print should never break translation flow.
+    // Debug dump should never break translation flow.
   }
 }
 
@@ -229,7 +246,7 @@ export function buildEpubTranslationCodecs() {
       text: String(segment?.text ?? ""),
     }));
     if (translatedSegments.length === 0) {
-      dumpEpubFailureDebug({
+      void dumpEpubFailureDebug({
         item,
         expectedSegments,
         actualSegments: normalizedActualSegments,
@@ -244,7 +261,7 @@ export function buildEpubTranslationCodecs() {
     for (const segment of translatedSegments) {
       const sid = String(segment?.sid || "").trim();
       if (!sid) {
-        dumpEpubFailureDebug({
+        void dumpEpubFailureDebug({
           item,
           expectedSegments,
           actualSegments: normalizedActualSegments,
@@ -264,7 +281,7 @@ export function buildEpubTranslationCodecs() {
     }
 
     if (duplicateSids.length > 0) {
-      dumpEpubFailureDebug({
+      void dumpEpubFailureDebug({
         item,
         expectedSegments,
         actualSegments: normalizedActualSegments,
@@ -275,7 +292,7 @@ export function buildEpubTranslationCodecs() {
       );
     }
     if (unexpectedSids.length > 0) {
-      dumpEpubFailureDebug({
+      void dumpEpubFailureDebug({
         item,
         expectedSegments,
         actualSegments: normalizedActualSegments,
@@ -287,7 +304,7 @@ export function buildEpubTranslationCodecs() {
     }
     const missingSids = expectedSids.filter((sid) => !translatedBySid.has(sid));
     if (missingSids.length > 0) {
-      dumpEpubFailureDebug({
+      void dumpEpubFailureDebug({
         item,
         expectedSegments,
         actualSegments: normalizedActualSegments,
