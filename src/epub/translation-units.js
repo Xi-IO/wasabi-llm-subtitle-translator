@@ -7,30 +7,6 @@ const NEVER_TRANSLATE_TAGS = new Set(["script", "style", "code", "pre"]);
 const WRAPPER_TAGS = new Set(["span", "font"]);
 const COMPLEX_INLINE_TAGS = new Set(["a", "i", "em", "strong", "sup", "sub", "code", "math"]);
 
-const TOKEN_OPEN = "[[[";
-const TOKEN_CLOSE = "]]]";
-
-function buildOpenToken(token) {
-  return `${TOKEN_OPEN}${token}${TOKEN_CLOSE}`;
-}
-
-function buildCloseToken(token) {
-  return `${TOKEN_OPEN}/${token}${TOKEN_CLOSE}`;
-}
-
-function escapeRegExp(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function findPlaceholder(text, token, startIndex, isClose = false) {
-  const slashPart = isClose ? "\\/\\s*" : "";
-  const pattern = new RegExp(`\\[\\[\\[\\s*${slashPart}${escapeRegExp(token)}\\s*\\]\\]\\]`, "g");
-  pattern.lastIndex = startIndex;
-  const match = pattern.exec(text);
-  if (!match) return null;
-  return { index: match.index, end: match.index + match[0].length };
-}
-
 function normalizeText(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
 }
@@ -330,6 +306,10 @@ export function applyTranslationUnits(chapter, translationMap, chapterUnits = []
     if (unit.mode === "simple") {
       const simpleText = String(translated || "").trim();
       if (!simpleText) {
+        stats.skippedInvalidPlaceholder += 1;
+        continue;
+      }
+      if (simpleText.startsWith("{") || simpleText.startsWith("[")) {
         stats.skippedInvalidPlaceholder += 1;
         continue;
       }

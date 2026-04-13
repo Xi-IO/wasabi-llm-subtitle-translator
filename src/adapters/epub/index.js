@@ -225,13 +225,15 @@ export async function translateEpubItems(items, cachePath, langOptions, options 
   function mergeSplitTranslations(_originalItem, splitNodeResults = []) {
     const mergedSegments = [];
     for (const node of splitNodeResults) {
-      try {
-        const parsed = JSON.parse(String(node?.translation || "{}"));
-        const segments = Array.isArray(parsed?.segments) ? parsed.segments : [];
-        mergedSegments.push(...segments);
-      } catch {
-        // ignore invalid part and continue
+      const parsed = JSON.parse(String(node?.translation || "{}"));
+      const segments = Array.isArray(parsed?.segments) ? parsed.segments : [];
+      if (segments.length === 0) {
+        throw new Error(`Split part produced empty/invalid segments for item ${node?.id || "<unknown>"}.`);
       }
+      mergedSegments.push(...segments);
+    }
+    if (mergedSegments.length === 0) {
+      throw new Error("Split merge produced empty segments.");
     }
     return JSON.stringify({ segments: mergedSegments });
   }

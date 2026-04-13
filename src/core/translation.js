@@ -492,9 +492,18 @@ export async function translateAll(items, cachePath, langOptions, options = {}) 
           }
 
           if (!splitFailed && splitNodeResults.length === splitCandidates.length) {
-            const mergedTranslation = typeof mergeSplitTranslations === "function"
-              ? mergeSplitTranslations(normalized, splitNodeResults)
-              : splitNodeResults.map((node) => node.translation).join("");
+            let mergedTranslation = "";
+            try {
+              mergedTranslation = typeof mergeSplitTranslations === "function"
+                ? mergeSplitTranslations(normalized, splitNodeResults)
+                : splitNodeResults.map((node) => node.translation).join("");
+            } catch (mergeErr) {
+              splitFailed = true;
+              lastError = mergeErr;
+            }
+            if (splitFailed || !String(mergedTranslation || "").trim()) {
+              lastError = lastError || new Error("Split merge result is empty.");
+            } else {
             const mergedResult = buildNodeResult(
               normalized,
               mergedTranslation,
@@ -505,6 +514,7 @@ export async function translateAll(items, cachePath, langOptions, options = {}) 
             await saveNodeResults([mergedResult]);
             runSummary.singleRecoveredNodes += 1;
             continue;
+            }
           }
         }
 
