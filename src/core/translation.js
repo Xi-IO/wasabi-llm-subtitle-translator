@@ -241,14 +241,17 @@ export async function translateAll(items, cachePath, langOptions, options = {}) 
   runSummary.totalFailureEvents = 0;
   runSummary.batchSuccessNodes = 0;
   runSummary.singleRecoveredNodes = 0;
-  runSummary.unresolvedNodes = 0;
+  runSummary.unresolvedCount = 0;
   runSummary.suspiciousNodes = 0;
   runSummary.repairedNodes = 0;
   runSummary.unresolvedNodeKeys = [];
+  runSummary.unresolvedItems = [];
 
   const persistNodeResults = Boolean(options.persistNodeResults);
   const customBatchTranslator = options.batchTranslator;
   const customRepairTranslator = options.repairTranslator;
+  const splitItemForRetry = options.splitItemForRetry;
+  const mergeSplitTranslations = options.mergeSplitTranslations;
   const serializeItem = options.serializeItem || defaultSerializeItem;
   const deserializeTranslation = options.deserializeTranslation || null;
   const needsBatchClient = !customBatchTranslator;
@@ -322,8 +325,16 @@ export async function translateAll(items, cachePath, langOptions, options = {}) 
       },
     );
     await saveNodeResults([unresolved]);
-    runSummary.unresolvedNodes += 1;
+    runSummary.unresolvedCount += 1;
     runSummary.unresolvedNodeKeys.push(item.key);
+    runSummary.unresolvedItems.push({
+      key: item.key,
+      batchIndex,
+      attempts,
+      errorType: lastError?.name || "Error",
+      errorMessage: lastError?.message || "Unknown error",
+    });
+    console.warn(`节点未解决，已回退原文: ${item.key} (${lastError?.message || "Unknown error"})`);
 
     if (runLogger?.logUnresolvedNode) {
       await runLogger.logUnresolvedNode({
@@ -441,6 +452,58 @@ export async function translateAll(items, cachePath, langOptions, options = {}) 
 
       if (!nodeResolved) {
         const normalized = itemLookup.get(String(item.key)) || item;
+        const splitCandidates = typeof splitItemForRetry === "function" ? splitItemForRetry(normalized) : [normalized];
+        const canSplitRetry = Array.isArray(splitCandidates) && splitCandidates.length > 1;
+
+        if (canSplitRetry) {
+          let splitFailed = false;
+          const splitNodeResults = [];
+          for (const splitItem of splitCandidates) {
+            let splitResolved = false;
+            let splitLastError = null;
+            for (let splitAttempt = 1; splitAttempt <= CONFIG.retry; splitAttempt++) {
+              try {
+                const splitRows = await batchTranslator([splitItem]);
+                const resolved = await materializeRows([splitItem], splitRows, {
+                  batch: CONFIG.retry,
+                  single: CONFIG.retry + splitAttempt,
+                  repair: 0,
+                });
+                splitNodeResults.push(resolved[0]);
+                splitResolved = true;
+                break;
+              } catch (splitErr) {
+                splitLastError = splitErr;
+                runSummary.totalFailureEvents += 1;
+                if (splitAttempt < CONFIG.retry && singleRetryDelayMs > 0) {
+                  await sleep(singleRetryDelayMs * splitAttempt);
+                }
+              }
+            }
+            if (!splitResolved) {
+              splitFailed = true;
+              lastError = splitLastError || lastError;
+              break;
+            }
+          }
+
+          if (!splitFailed && splitNodeResults.length === splitCandidates.length) {
+            const mergedTranslation = typeof mergeSplitTranslations === "function"
+              ? mergeSplitTranslations(normalized, splitNodeResults)
+              : splitNodeResults.map((node) => node.translation).join("");
+            const mergedResult = buildNodeResult(
+              normalized,
+              mergedTranslation,
+              "translated",
+              [],
+              { batch: CONFIG.retry, single: CONFIG.retry, repair: 0 },
+            );
+            await saveNodeResults([mergedResult]);
+            runSummary.singleRecoveredNodes += 1;
+            continue;
+          }
+        }
+
         await markUnresolved(normalized, batchIndex, { batch: CONFIG.retry, single: CONFIG.retry, repair: 0 }, lastError);
       }
     }
