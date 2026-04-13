@@ -33,6 +33,7 @@ async function main() {
     inputFile: workspace.inputPath,
     provider: CONFIG.provider.provider,
     model: CONFIG.provider.model,
+    tempDir: workspace.tempDir,
     verboseFailures: langOptions.verboseFailures,
   });
   const unregisterCrashHooks = preserveRunLogOnCrash(runLogger);

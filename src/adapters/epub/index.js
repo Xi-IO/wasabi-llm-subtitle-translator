@@ -204,6 +204,20 @@ export function splitSegmentItem(item, chunkSize = EPUB_SPLIT_CHUNK_SIZE) {
 }
 
 export async function translateEpubItems(items, cachePath, langOptions, options = {}) {
+  function mergeSplitTranslations(_originalItem, splitNodeResults = []) {
+    const mergedSegments = [];
+    for (const node of splitNodeResults) {
+      try {
+        const parsed = JSON.parse(String(node?.translation || "{}"));
+        const segments = Array.isArray(parsed?.segments) ? parsed.segments : [];
+        mergedSegments.push(...segments);
+      } catch {
+        // ignore invalid part and continue
+      }
+    }
+    return JSON.stringify({ segments: mergedSegments });
+  }
+
   const expandedItems = items.flatMap((item) => splitSegmentItem(item));
   const splitMap = await translateAll(expandedItems, cachePath, langOptions, {
     promptPath: DEFAULT_EPUB_PROMPT_PATH,
@@ -211,6 +225,8 @@ export async function translateEpubItems(items, cachePath, langOptions, options 
     returnNodeResults: false,
     enableRepair: false,
     ...buildEpubTranslationCodecs(),
+    splitItemForRetry: (item) => splitSegmentItem(item),
+    mergeSplitTranslations,
     ...options,
   });
 
