@@ -82,18 +82,17 @@ export function applyEpubTranslations(epubDoc, items, translationMap) {
   return epubDoc;
 }
 
-export async function translateEpubItems(items, cachePath, langOptions, options = {}) {
+export function buildEpubTranslationCodecs() {
   function serializeSegmentItem(item) {
     return String(item?.sourceText ?? item?.text ?? "");
   }
 
   function deserializeSegmentTranslation(item, translation) {
-    const parsed = JSON.parse((String(translation || "").match(/\{[\s\S]*\}/) || [])[0] || translation);
-    const segments = Array.isArray(parsed?.segments) ? parsed.segments : null;
-    if (!segments) {
-      throw new Error("EPUB translation payload must contain segments array.");
-    }
-
+    const sourcePayload = JSON.parse(String(item?.sourceText || "{}"));
+    const sourceSegments = Array.isArray(sourcePayload?.segments) ? sourcePayload.segments : [];
+    const sourceBySid = new Map(
+      sourceSegments.map((segment) => [String(segment?.sid || "").trim(), String(segment?.text ?? "")]),
+    );
     const expectedSids = Array.isArray(item?.segmentMap)
       ? item.segmentMap.map((mapping) => String(mapping?.sid || "").trim()).filter(Boolean)
       : [];
@@ -101,35 +100,50 @@ export async function translateEpubItems(items, cachePath, langOptions, options 
       throw new Error(`Missing segment map for item ${item?.key || "<unknown>"}.`);
     }
 
+    let parsed = null;
+    try {
+      parsed = JSON.parse((String(translation || "").match(/\{[\s\S]*\}/) || [])[0] || translation);
+    } catch {
+      console.warn(`[EPUB编解码] 非法JSON，回退原文分段: ${item?.key || "<unknown>"}`);
+      return serializeSegmentItem(item);
+    }
+
+    const translatedSegments = Array.isArray(parsed?.segments) ? parsed.segments : [];
     const translatedBySid = new Map();
-    for (const segment of segments) {
+    for (const segment of translatedSegments) {
       const sid = String(segment?.sid || "").trim();
-      if (!sid) throw new Error("EPUB translation segment sid is empty.");
+      if (!sid) continue;
       translatedBySid.set(sid, String(segment?.text ?? ""));
     }
 
-    for (const sid of expectedSids) {
-      if (!translatedBySid.has(sid)) {
-        throw new Error(`EPUB translation missing sid ${sid} for item ${item?.key || "<unknown>"}.`);
-      }
-    }
-    if (translatedBySid.size !== expectedSids.length) {
-      throw new Error(`EPUB translation sid count mismatch for item ${item?.key || "<unknown>"}.`);
-    }
-
     const normalized = {
-      segments: expectedSids.map((sid) => ({ sid, text: translatedBySid.get(sid) })),
+      segments: expectedSids.map((sid) => ({
+        sid,
+        text: translatedBySid.has(sid) ? translatedBySid.get(sid) : (sourceBySid.get(sid) || ""),
+      })),
     };
+
+    if (translatedBySid.size !== expectedSids.length) {
+      console.warn(
+        `[EPUB编解码] sid不完整，已按原sid补齐: ${item?.key || "<unknown>"} expected=${expectedSids.length} got=${translatedBySid.size}`,
+      );
+    }
     return JSON.stringify(normalized);
   }
 
+  return {
+    serializeItem: serializeSegmentItem,
+    deserializeTranslation: deserializeSegmentTranslation,
+  };
+}
+
+export async function translateEpubItems(items, cachePath, langOptions, options = {}) {
   return translateAll(items, cachePath, langOptions, {
     promptPath: DEFAULT_EPUB_PROMPT_PATH,
     persistNodeResults: true,
     returnNodeResults: false,
     enableRepair: false,
-    serializeItem: serializeSegmentItem,
-    deserializeTranslation: deserializeSegmentTranslation,
+    ...buildEpubTranslationCodecs(),
     ...options,
   });
 }
