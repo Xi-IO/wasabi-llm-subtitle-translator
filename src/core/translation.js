@@ -21,13 +21,18 @@ function itemText(item) {
   return String(item.text ?? item.cleaned ?? item.sourceText ?? "").trim();
 }
 
-function makeBatches(items) {
+function defaultSerializeItem(item) {
+  return itemText(item);
+}
+
+function makeBatches(items, serializeItem = defaultSerializeItem) {
   const batches = [];
   let current = [];
   let chars = 0;
 
   for (const item of items) {
-    const piece = itemText(item).length + 40;
+    const payload = String(serializeItem(item) ?? "").trim();
+    const piece = payload.length + 40;
     const shouldFlush =
       current.length >= CONFIG.maxBatchItems || chars + piece > CONFIG.maxBatchChars;
 
@@ -56,7 +61,7 @@ function createClient() {
   });
 }
 
-async function buildMessages(batch, langOptions, promptPath) {
+async function buildMessages(batch, langOptions, promptPath, serializeItem = defaultSerializeItem) {
   const template = await fs.readFile(promptPath || DEFAULT_SUBTITLE_PROMPT_PATH, "utf8");
   const systemPrompt = template
     .replaceAll("{{SOURCE_LANGUAGE}}", languageLabel(langOptions.from))
@@ -64,7 +69,14 @@ async function buildMessages(batch, langOptions, promptPath) {
 
   return [
     { role: "system", content: systemPrompt },
-    { role: "user", content: JSON.stringify(batch.map((x) => ({ id: x.key, text: itemText(x) })), null, 2) },
+    {
+      role: "user",
+      content: JSON.stringify(
+        batch.map((x) => ({ id: x.key, text: String(serializeItem(x) ?? "") })),
+        null,
+        2,
+      ),
+    },
   ];
 }
 
@@ -75,11 +87,17 @@ function extractJsonArray(text) {
   return match;
 }
 
-function normalizeResponseRows(parsed) {
+function normalizeResponseRows(parsed, batch = [], deserializeTranslation = null) {
   if (!Array.isArray(parsed)) throw new Error("Model response JSON is not an array.");
+  const itemLookup = new Map(batch.map((item) => [String(item.key), item]));
   return parsed.map((x) => ({
-    id: String(x?.id ?? x?.key ?? ""),
-    translation: String(x?.translation ?? "").trim(),
+    id: String(x?.id ?? x?.key ?? "").trim(),
+    translation: (() => {
+      const raw = String(x?.translation ?? "").trim();
+      if (!deserializeTranslation) return raw;
+      const item = itemLookup.get(String(x?.id ?? x?.key ?? "").trim());
+      return String(deserializeTranslation(item || null, raw)).trim();
+    })(),
   }));
 }
 
@@ -112,8 +130,10 @@ function validateBatchOutput(batch, rows) {
   }
 }
 
-async function translateBatch(client, batch, langOptions, promptPath) {
-  const messages = await buildMessages(batch, langOptions, promptPath);
+async function translateBatch(client, batch, langOptions, promptPath, codecs = {}) {
+  const serializeItem = codecs.serializeItem || defaultSerializeItem;
+  const deserializeTranslation = codecs.deserializeTranslation || null;
+  const messages = await buildMessages(batch, langOptions, promptPath, serializeItem);
   const completion = await client.chat.completions.create({
     model: CONFIG.provider.model,
     messages,
@@ -123,7 +143,7 @@ async function translateBatch(client, batch, langOptions, promptPath) {
   const text = completion.choices?.[0]?.message?.content || "";
   let parsed;
   try {
-    parsed = normalizeResponseRows(JSON.parse(extractJsonArray(text)));
+    parsed = normalizeResponseRows(JSON.parse(extractJsonArray(text)), batch, deserializeTranslation);
     validateBatchOutput(batch, parsed);
   } catch (err) {
     const wrapped = new Error(err.message);
@@ -229,11 +249,16 @@ export async function translateAll(items, cachePath, langOptions, options = {}) 
   const persistNodeResults = Boolean(options.persistNodeResults);
   const customBatchTranslator = options.batchTranslator;
   const customRepairTranslator = options.repairTranslator;
+  const serializeItem = options.serializeItem || defaultSerializeItem;
+  const deserializeTranslation = options.deserializeTranslation || null;
   const needsBatchClient = !customBatchTranslator;
   const needsRepairClient = repairEnabled && !customRepairTranslator;
   const client = needsBatchClient || needsRepairClient ? createClient() : null;
   const batchTranslator = customBatchTranslator
-    || ((batch) => translateBatch(client, batch, langOptions, promptPath));
+    || ((batch) => translateBatch(client, batch, langOptions, promptPath, {
+      serializeItem,
+      deserializeTranslation,
+    }));
   const repairTranslator = customRepairTranslator
     || ((item, draft) => repairNodeTranslation(client, item, draft, langOptions));
 
@@ -254,7 +279,7 @@ export async function translateAll(items, cachePath, langOptions, options = {}) 
     if (!cached) return true;
     return cached.status === "unresolved";
   });
-  const batches = makeBatches(pending);
+  const batches = makeBatches(pending, serializeItem);
   const cacheMutex = new Mutex();
   const concurrency = Math.max(1, Number(options.concurrency ?? CONFIG.translationConcurrency) || 1);
   runSummary.cachedNodes = items.length - pending.length;
@@ -360,7 +385,7 @@ export async function translateAll(items, cachePath, langOptions, options = {}) 
   }
 
   async function materializeRows(batch, rows, attempts) {
-    const normalizedRows = normalizeResponseRows(rows);
+    const normalizedRows = normalizeResponseRows(rows, batch, deserializeTranslation);
     validateBatchOutput(batch, normalizedRows);
     const map = new Map(normalizedRows.map((row) => [row.id, row.translation]));
 
@@ -500,5 +525,6 @@ export async function translateAll(items, cachePath, langOptions, options = {}) 
 }
 
 export const __internal = {
+  normalizeResponseRows,
   validateBatchOutput,
 };

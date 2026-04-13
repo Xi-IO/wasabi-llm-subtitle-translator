@@ -83,11 +83,53 @@ export function applyEpubTranslations(epubDoc, items, translationMap) {
 }
 
 export async function translateEpubItems(items, cachePath, langOptions, options = {}) {
+  function serializeSegmentItem(item) {
+    return String(item?.sourceText ?? item?.text ?? "");
+  }
+
+  function deserializeSegmentTranslation(item, translation) {
+    const parsed = JSON.parse((String(translation || "").match(/\{[\s\S]*\}/) || [])[0] || translation);
+    const segments = Array.isArray(parsed?.segments) ? parsed.segments : null;
+    if (!segments) {
+      throw new Error("EPUB translation payload must contain segments array.");
+    }
+
+    const expectedSids = Array.isArray(item?.segmentMap)
+      ? item.segmentMap.map((mapping) => String(mapping?.sid || "").trim()).filter(Boolean)
+      : [];
+    if (expectedSids.length === 0) {
+      throw new Error(`Missing segment map for item ${item?.key || "<unknown>"}.`);
+    }
+
+    const translatedBySid = new Map();
+    for (const segment of segments) {
+      const sid = String(segment?.sid || "").trim();
+      if (!sid) throw new Error("EPUB translation segment sid is empty.");
+      translatedBySid.set(sid, String(segment?.text ?? ""));
+    }
+
+    for (const sid of expectedSids) {
+      if (!translatedBySid.has(sid)) {
+        throw new Error(`EPUB translation missing sid ${sid} for item ${item?.key || "<unknown>"}.`);
+      }
+    }
+    if (translatedBySid.size !== expectedSids.length) {
+      throw new Error(`EPUB translation sid count mismatch for item ${item?.key || "<unknown>"}.`);
+    }
+
+    const normalized = {
+      segments: expectedSids.map((sid) => ({ sid, text: translatedBySid.get(sid) })),
+    };
+    return JSON.stringify(normalized);
+  }
+
   return translateAll(items, cachePath, langOptions, {
     promptPath: DEFAULT_EPUB_PROMPT_PATH,
     persistNodeResults: true,
     returnNodeResults: false,
     enableRepair: false,
+    serializeItem: serializeSegmentItem,
+    deserializeTranslation: deserializeSegmentTranslation,
     ...options,
   });
 }
