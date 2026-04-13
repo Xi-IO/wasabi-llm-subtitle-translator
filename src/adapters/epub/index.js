@@ -16,6 +16,10 @@ export function extractEpubItems(epubDoc) {
   };
 
   for (const chapter of epubDoc.chapters) {
+    chapter.preprocessContext = {
+      referencedIds: epubDoc.referencedIds,
+      definedClasses: epubDoc.definedClasses,
+    };
     const diagnostics = {};
     const units = extractTranslationUnits(chapter, diagnostics);
     const chapterItems = units.map((unit) => ({

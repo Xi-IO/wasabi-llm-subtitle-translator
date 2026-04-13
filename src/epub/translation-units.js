@@ -1,11 +1,16 @@
-const BLOCK_TAGS = new Set([
+const STRICT_BLOCK_TAGS = new Set([
   "h1", "h2", "h3", "h4", "h5", "h6",
-  "p", "li", "blockquote", "div", "section", "article",
-  "figcaption", "caption", "td", "th", "dt", "dd",
+  "p", "li", "blockquote",
+  "figcaption", "caption",
 ]);
+const RELAXED_BLOCK_TAGS = new Set([
+  "div", "section", "article", "td", "th", "dt", "dd",
+]);
+const BLOCK_TAGS = new Set([...STRICT_BLOCK_TAGS, ...RELAXED_BLOCK_TAGS]);
 const NEVER_TRANSLATE_TAGS = new Set(["script", "style", "code", "pre"]);
 const WRAPPER_TAGS = new Set(["span", "font"]);
-const COMPLEX_INLINE_TAGS = new Set(["a", "i", "em", "strong", "sup", "sub", "code", "math"]);
+const INLINE_EMPHASIS_TAGS = new Set(["i", "em", "strong", "b"]);
+const HEAVY_INLINE_TAGS = new Set(["a", "code", "math", "ruby", "rt"]);
 
 function normalizeText(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
@@ -29,10 +34,14 @@ function incrementReason(reasons, reason) {
   reasons[reason] = (reasons[reason] || 0) + 1;
 }
 
-function hasMeaningfulClass(node) {
+function hasMeaningfulClass(node, context = null) {
   const classAttr = String(node?.attrs?.class || "").trim();
   if (!classAttr) return false;
   const tokens = classAttr.split(/\s+/).filter(Boolean);
+  const definedClasses = context?.definedClasses instanceof Set ? context.definedClasses : null;
+  if (definedClasses && tokens.some((token) => definedClasses.has(token))) {
+    return true;
+  }
   return tokens.some((token) => !/^calibre\d*$/i.test(token) && !/^x-?epub/i.test(token));
 }
 
@@ -54,15 +63,18 @@ function isPagebreakElement(node) {
     || role.includes("doc-pagebreak");
 }
 
-function shouldUnwrapWrapper(node) {
+function shouldUnwrapWrapper(node, context = null) {
   if (node?.type !== "element" || !WRAPPER_TAGS.has(node.tagName)) return false;
-  if (hasMeaningfulClass(node)) return false;
+  if (hasMeaningfulClass(node, context)) return false;
+  const nodeId = String(node.attrs?.id || "").trim();
+  const referencedIds = context?.referencedIds instanceof Set ? context.referencedIds : null;
+  if (nodeId && referencedIds?.has(nodeId)) return false;
   if (node.attrs?.lang || node.attrs?.style || node.attrs?.id || node.attrs?.role) return false;
   if (node.attrs?.["epub:type"] || node.attrs?.title) return false;
   return true;
 }
 
-function cleanupBlockNode(blockNode) {
+function cleanupBlockNode(blockNode, context = null) {
   function clean(node) {
     if (!node || node.type !== "element") return [node];
     const cleanedChildren = (node.children || []).flatMap((child) => clean(child)).filter(Boolean);
@@ -71,7 +83,7 @@ function cleanupBlockNode(blockNode) {
     if (isPagebreakElement(node) && textContentLength(node) === 0) {
       return [];
     }
-    if (shouldUnwrapWrapper(node)) {
+    if (shouldUnwrapWrapper(node, context)) {
       return cleanedChildren;
     }
     return [node];
@@ -82,31 +94,50 @@ function cleanupBlockNode(blockNode) {
 
 export function classifyBlockForTranslation(blockNode, textNodes = []) {
   const reasons = [];
-  let inlineComplexity = 0;
-  let hasSupSub = false;
-  let hasLink = false;
+  let emphasisCount = 0;
+  let heavyInlineCount = 0;
+  let supSubCount = 0;
+  let supSubLongCount = 0;
+  let linkCount = 0;
   let hasPagebreak = false;
 
   function scan(node) {
     if (!node) return;
     if (node.type === "element") {
-      if (COMPLEX_INLINE_TAGS.has(node.tagName)) inlineComplexity += 1;
-      if (node.tagName === "sup" || node.tagName === "sub") hasSupSub = true;
-      if (node.tagName === "a") hasLink = true;
+      if (INLINE_EMPHASIS_TAGS.has(node.tagName)) emphasisCount += 1;
+      if (HEAVY_INLINE_TAGS.has(node.tagName)) heavyInlineCount += 1;
+      if (node.tagName === "a") linkCount += 1;
+      if (node.tagName === "sup" || node.tagName === "sub") {
+        supSubCount += 1;
+        const rawText = (node.children || []).map((child) => String(child?.text || "")).join("");
+        if (normalizeText(rawText).length > 2) supSubLongCount += 1;
+      }
       if (isPagebreakElement(node)) hasPagebreak = true;
     }
     for (const child of node.children || []) scan(child);
   }
   scan(blockNode);
 
-  if (hasSupSub) reasons.push("has-sup-sub");
-  if (hasPagebreak) reasons.push("has-pagebreak");
-  if (inlineComplexity >= 1) reasons.push("has-inline-structure");
-  if (hasLink && inlineComplexity >= 3) reasons.push("link-rich-inline");
-  if (inlineComplexity >= 6) reasons.push("inline-complexity-high");
-  if (textNodes.length >= 10) reasons.push("fragmented-text-nodes");
+  const inlineComplexityScore = (heavyInlineCount * 3)
+    + (Math.max(0, emphasisCount - 2) * 1)
+    + (supSubLongCount * 2)
+    + (Math.max(0, linkCount - 1) * 2);
+  const fragmented = textNodes.length >= 14;
+  const avgFragmentLength = textNodes.length > 0
+    ? textNodes.reduce((sum, item) => sum + normalizeText(item.text).length, 0) / textNodes.length
+    : 0;
 
-  const mode = reasons.length > 0 ? "complex" : "simple";
+  if (supSubCount > 0 && supSubLongCount > 0) reasons.push("has-sup-sub");
+  if (hasPagebreak) reasons.push("has-pagebreak");
+  if (inlineComplexityScore >= 8) reasons.push("inline-complexity-high");
+  if (linkCount >= 2 && textNodes.length >= 6) reasons.push("link-rich-inline");
+  if (fragmented || (textNodes.length >= 10 && avgFragmentLength <= 10)) reasons.push("fragmented-text-nodes");
+
+  const mode = reasons.some((reason) => (
+    reason === "inline-complexity-high"
+    || reason === "link-rich-inline"
+    || reason === "fragmented-text-nodes"
+  )) ? "complex" : "simple";
   return { mode, reasons };
 }
 
@@ -229,6 +260,18 @@ export function extractTranslationUnits(chapter, diagnostics = null) {
     complexUnits: 0,
   };
 
+  const cleanupContext = chapter?.preprocessContext || {};
+
+  function isRelaxedBlockAllowed(node, textNodes, classification) {
+    if (!RELAXED_BLOCK_TAGS.has(node.tagName)) return true;
+    if (textNodes.length === 0) return false;
+    if (classification.mode === "complex" && classification.reasons.includes("inline-complexity-high")) {
+      return false;
+    }
+    if (classification.mode === "complex" && textNodes.length > 12) return false;
+    return true;
+  }
+
   function walk(node) {
     if (!isElement(node)) {
       for (const child of node.children || []) walk(child);
@@ -238,10 +281,14 @@ export function extractTranslationUnits(chapter, diagnostics = null) {
     if (BLOCK_TAGS.has(node.tagName)) {
       stats.blockCandidates += 1;
       if (!hasNestedBlockStructure(node)) {
-        cleanupBlockNode(node);
+        cleanupBlockNode(node, cleanupContext);
         const textNodes = collectTextNodes(node);
         if (textNodes.length > 0) {
           const classification = classifyBlockForTranslation(node, textNodes);
+          if (!isRelaxedBlockAllowed(node, textNodes, classification)) {
+            incrementReason(stats.skippedReasons, "relaxed-block-complex");
+            return;
+          }
           const { segmentPayload, segmentMap } = buildSegmentPayload(textNodes);
           const isSimple = classification.mode === "simple";
           units.push({
