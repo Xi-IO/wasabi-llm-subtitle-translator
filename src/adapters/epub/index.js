@@ -129,11 +129,6 @@ export function buildEpubTranslationCodecs() {
       return value;
     }
 
-    const sourcePayload = JSON.parse(String(item?.sourceText || "{}"));
-    const sourceSegments = Array.isArray(sourcePayload?.segments) ? sourcePayload.segments : [];
-    const sourceBySid = new Map(
-      sourceSegments.map((segment) => [String(segment?.sid || "").trim(), String(segment?.text ?? "")]),
-    );
     const expectedSids = Array.isArray(item?.segmentMap)
       ? item.segmentMap.map((mapping) => String(mapping?.sid || "").trim()).filter(Boolean)
       : [];
@@ -156,29 +151,50 @@ export function buildEpubTranslationCodecs() {
     }
 
     const translatedSegments = Array.isArray(parsed?.segments) ? parsed.segments : [];
+    if (translatedSegments.length === 0) {
+      throw new Error(`EPUB translation segments missing/empty for item ${item?.key || "<unknown>"}.`);
+    }
     const translatedBySid = new Map();
+    const duplicateSids = [];
+    const unexpectedSids = [];
+    const expectedSidSet = new Set(expectedSids);
     for (const segment of translatedSegments) {
       const sid = String(segment?.sid || "").trim();
-      if (!sid) continue;
+      if (!sid) {
+        throw new Error(`EPUB translation has empty sid for item ${item?.key || "<unknown>"}.`);
+      }
+      if (!expectedSidSet.has(sid)) {
+        unexpectedSids.push(sid);
+        continue;
+      }
+      if (translatedBySid.has(sid)) {
+        duplicateSids.push(sid);
+        continue;
+      }
       translatedBySid.set(sid, String(segment?.text ?? ""));
     }
 
-    const missingSids = expectedSids.filter((sid) => !translatedBySid.has(sid));
-    if (missingSids.length > 3) {
+    if (duplicateSids.length > 0) {
       throw new Error(
-        `EPUB translation missing ${missingSids.length} sid(s) for item ${item?.key || "<unknown>"}: ${missingSids.join(", ")}`,
+        `EPUB translation sid duplicate for item ${item?.key || "<unknown>"}: ${[...new Set(duplicateSids)].join(", ")}`,
       );
     }
+    if (unexpectedSids.length > 0) {
+      throw new Error(
+        `EPUB translation sid mismatch for item ${item?.key || "<unknown>"}: unexpected ${[...new Set(unexpectedSids)].join(", ")}`,
+      );
+    }
+    const missingSids = expectedSids.filter((sid) => !translatedBySid.has(sid));
     if (missingSids.length > 0) {
-      console.warn(
-        `[EPUB编解码] sid缺失(${missingSids.length})，仅补齐缺失段: ${item?.key || "<unknown>"} ${missingSids.join(", ")}`,
+      throw new Error(
+        `EPUB translation sid missing for item ${item?.key || "<unknown>"}: ${missingSids.join(", ")}`,
       );
     }
 
     const normalized = {
       segments: expectedSids.map((sid) => ({
         sid,
-        text: translatedBySid.has(sid) ? translatedBySid.get(sid) : (sourceBySid.get(sid) || ""),
+        text: translatedBySid.get(sid),
       })),
     };
     return JSON.stringify(normalized);
