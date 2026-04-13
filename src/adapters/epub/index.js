@@ -86,6 +86,24 @@ export function applyEpubTranslations(epubDoc, items, translationMap) {
 }
 
 export function buildEpubTranslationCodecs() {
+  function extractFirstJsonObject(raw) {
+    const fenced = String(raw || "").replace(/```json|```/gi, "").trim();
+    const match = fenced.match(/\{[\s\S]*\}/);
+    return (match ? match[0] : fenced).trim();
+  }
+
+  function normalizeJsonText(raw) {
+    return String(raw || "")
+      .replace(/[“”]/g, "\"")
+      .replace(/[‘’]/g, "'")
+      .replace(/,\s*([}\]])/g, "$1");
+  }
+
+  function parseSegmentPayloadLenient(raw) {
+    const candidate = normalizeJsonText(extractFirstJsonObject(raw));
+    return JSON.parse(candidate);
+  }
+
   function serializeSegmentItem(item) {
     return String(item?.sourceText ?? item?.text ?? "");
   }
@@ -105,10 +123,9 @@ export function buildEpubTranslationCodecs() {
 
     let parsed = null;
     try {
-      parsed = JSON.parse((String(translation || "").match(/\{[\s\S]*\}/) || [])[0] || translation);
+      parsed = parseSegmentPayloadLenient(translation);
     } catch {
-      console.warn(`[EPUB编解码] 非法JSON，回退原文分段: ${item?.key || "<unknown>"}`);
-      return serializeSegmentItem(item);
+      throw new Error(`EPUB translation invalid JSON for item ${item?.key || "<unknown>"}.`);
     }
 
     const translatedSegments = Array.isArray(parsed?.segments) ? parsed.segments : [];
@@ -119,18 +136,24 @@ export function buildEpubTranslationCodecs() {
       translatedBySid.set(sid, String(segment?.text ?? ""));
     }
 
+    const missingSids = expectedSids.filter((sid) => !translatedBySid.has(sid));
+    if (missingSids.length > 3) {
+      throw new Error(
+        `EPUB translation missing ${missingSids.length} sid(s) for item ${item?.key || "<unknown>"}: ${missingSids.join(", ")}`,
+      );
+    }
+    if (missingSids.length > 0) {
+      console.warn(
+        `[EPUB编解码] sid缺失(${missingSids.length})，仅补齐缺失段: ${item?.key || "<unknown>"} ${missingSids.join(", ")}`,
+      );
+    }
+
     const normalized = {
       segments: expectedSids.map((sid) => ({
         sid,
         text: translatedBySid.has(sid) ? translatedBySid.get(sid) : (sourceBySid.get(sid) || ""),
       })),
     };
-
-    if (translatedBySid.size !== expectedSids.length) {
-      console.warn(
-        `[EPUB编解码] sid不完整，已按原sid补齐: ${item?.key || "<unknown>"} expected=${expectedSids.length} got=${translatedBySid.size}`,
-      );
-    }
     return JSON.stringify(normalized);
   }
 
