@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import path from "path";
 import OpenAI from "openai";
 import { DEFAULT_EPUB_PROMPT_PATH, translateAll } from "../../core/translation.js";
 import { CONFIG, languageLabel } from "../../config/runtime.js";
@@ -8,6 +9,87 @@ const EPUB_SPLIT_THRESHOLD = 8;
 const EPUB_SPLIT_CHUNK_SIZE = 6;
 const EPUB_SPLIT_CHAR_THRESHOLD = 1200;
 const EPUB_MISSING_SEGMENTS_PROMPT_PATH = new URL("../../../prompts/epub_missing_segments_repair.txt", import.meta.url);
+
+function resolveEpubFailureDebugDir() {
+  return process.env.EPUB_FAILURE_DEBUG_DIR || path.join(process.cwd(), "debug", "epub-failures");
+}
+
+function isEpubSegmentDebugEnabled() {
+  const flag = String(process.env.EPUB_SEGMENT_DEBUG || "").trim().toLowerCase();
+  return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
+}
+
+function sanitizeDebugName(value) {
+  return String(value || "unknown")
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80) || "unknown";
+}
+
+function parseExpectedSegments(sourceText) {
+  try {
+    const payload = JSON.parse(String(sourceText || "{}"));
+    const segments = Array.isArray(payload?.segments) ? payload.segments : [];
+    return segments.map((segment) => ({
+      sid: String(segment?.sid || "").trim(),
+      text: String(segment?.text ?? ""),
+    })).filter((segment) => segment.sid);
+  } catch {
+    return [];
+  }
+}
+
+function calcAverageSegmentLength(segments) {
+  if (!Array.isArray(segments) || segments.length === 0) return 0;
+  const total = segments.reduce((sum, segment) => sum + String(segment?.text ?? "").length, 0);
+  return Number((total / segments.length).toFixed(2));
+}
+
+async function dumpEpubFailureDebug({
+  item,
+  expectedSegments,
+  actualSegments,
+  errorType,
+}) {
+  if (!isEpubSegmentDebugEnabled()) return;
+  try {
+    const expectedSids = expectedSegments.map((segment) => segment.sid);
+    const actualSids = actualSegments.map((segment) => segment.sid);
+    const expectedSidSet = new Set(expectedSids);
+    const actualSidSet = new Set(actualSids);
+    const missing = expectedSids.filter((sid) => !actualSidSet.has(sid));
+    const extra = actualSids.filter((sid) => !expectedSidSet.has(sid));
+    const missingDetails = missing.map((sid) => ({
+      sid,
+      text: expectedSegments.find((segment) => segment.sid === sid)?.text || "",
+    }));
+
+    const debugPayload = {
+      itemKey: item?.key || "<unknown>",
+      mode: item?.mode || "complex",
+      errorType: String(errorType || "segment-mismatch"),
+      expected: { segments: expectedSegments },
+      actual: { segments: actualSegments },
+      diff: { missing, extra },
+      missingDetails,
+      metrics: {
+        expectedCount: expectedSegments.length,
+        actualCount: actualSegments.length,
+        expectedAvgLen: calcAverageSegmentLength(expectedSegments),
+        actualAvgLen: calcAverageSegmentLength(actualSegments),
+      },
+    };
+
+    const debugDir = resolveEpubFailureDebugDir();
+    await fs.mkdir(debugDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const safeKey = sanitizeDebugName(item?.key);
+    const outputPath = path.join(debugDir, `${timestamp}-${safeKey}.json`);
+    await fs.writeFile(outputPath, JSON.stringify(debugPayload, null, 2), "utf8");
+  } catch {
+    // Debug dump should never break translation flow.
+  }
+}
 
 export function extractEpubItems(epubDoc) {
   const allItems = [];
@@ -140,6 +222,7 @@ export function buildEpubTranslationCodecs() {
     const expectedSids = Array.isArray(item?.segmentMap)
       ? item.segmentMap.map((mapping) => String(mapping?.sid || "").trim()).filter(Boolean)
       : [];
+    const expectedSegments = parseExpectedSegments(item?.sourceText);
     if (expectedSids.length === 0) {
       throw new Error(`Missing segment map for item ${item?.key || "<unknown>"}.`);
     }
@@ -159,7 +242,17 @@ export function buildEpubTranslationCodecs() {
     }
 
     const translatedSegments = Array.isArray(parsed?.segments) ? parsed.segments : [];
+    const normalizedActualSegments = translatedSegments.map((segment) => ({
+      sid: String(segment?.sid || "").trim(),
+      text: String(segment?.text ?? ""),
+    }));
     if (translatedSegments.length === 0) {
+      void dumpEpubFailureDebug({
+        item,
+        expectedSegments,
+        actualSegments: normalizedActualSegments,
+        errorType: "invalid-placeholder-empty-segments",
+      });
       throw new Error(`EPUB translation segments missing/empty for item ${item?.key || "<unknown>"}.`);
     }
     const translatedBySid = new Map();
@@ -169,6 +262,12 @@ export function buildEpubTranslationCodecs() {
     for (const segment of translatedSegments) {
       const sid = String(segment?.sid || "").trim();
       if (!sid) {
+        void dumpEpubFailureDebug({
+          item,
+          expectedSegments,
+          actualSegments: normalizedActualSegments,
+          errorType: "invalid-placeholder",
+        });
         throw new Error(`EPUB translation has empty sid for item ${item?.key || "<unknown>"}.`);
       }
       if (!expectedSidSet.has(sid)) {
@@ -183,17 +282,35 @@ export function buildEpubTranslationCodecs() {
     }
 
     if (duplicateSids.length > 0) {
+      void dumpEpubFailureDebug({
+        item,
+        expectedSegments,
+        actualSegments: normalizedActualSegments,
+        errorType: "segment-mismatch-duplicate",
+      });
       throw new Error(
         `EPUB translation sid duplicate for item ${item?.key || "<unknown>"}: ${[...new Set(duplicateSids)].join(", ")}`,
       );
     }
     if (unexpectedSids.length > 0) {
+      void dumpEpubFailureDebug({
+        item,
+        expectedSegments,
+        actualSegments: normalizedActualSegments,
+        errorType: "segment-mismatch-unexpected",
+      });
       throw new Error(
         `EPUB translation sid mismatch for item ${item?.key || "<unknown>"}: unexpected ${[...new Set(unexpectedSids)].join(", ")}`,
       );
     }
     const missingSids = expectedSids.filter((sid) => !translatedBySid.has(sid));
     if (missingSids.length > 0) {
+      void dumpEpubFailureDebug({
+        item,
+        expectedSegments,
+        actualSegments: normalizedActualSegments,
+        errorType: "sid-missing",
+      });
       const missingError = new Error(
         `EPUB translation sid missing for item ${item?.key || "<unknown>"}: ${missingSids.join(", ")}`,
       );
