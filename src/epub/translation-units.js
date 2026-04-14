@@ -12,6 +12,7 @@ const WRAPPER_TAGS = new Set(["span", "font"]);
 const INLINE_EMPHASIS_TAGS = new Set(["i", "em", "strong", "b"]);
 const HEAVY_INLINE_TAGS = new Set(["a", "code", "math", "ruby", "rt"]);
 const FOOTNOTE_CLASS_HINTS = /(footnote|noteref|citation|ref\b)/i;
+const BOOK_CONTEXT_HINTS = /\b(book|novel|paper|work|called|titled)\b/i;
 
 function normalizeText(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
@@ -175,8 +176,87 @@ function hasNestedBlockStructure(blockNode) {
   return (blockNode.children || []).some((child) => walk(child, false));
 }
 
-function collectTextNodes(blockNode) {
+function isMostlyTitleCase(text) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  if (words.length === 0) return false;
+  let titleLike = 0;
+  for (const word of words) {
+    if (/^[A-Z][a-z]+$/.test(word) || /^[A-Z][a-z]+(?:[-'][A-Z][a-z]+)+$/.test(word)) {
+      titleLike += 1;
+    }
+  }
+  return titleLike / words.length >= 0.6;
+}
+
+function buildItalicInlineContext(blockNode, { mathAdjacent = false } = {}) {
+  const italicNodes = [];
+  function walk(node) {
+    if (!node) return;
+    if (node.type === "element") {
+      if (node.tagName === "i" || node.tagName === "em") italicNodes.push(node);
+      for (const child of node.children || []) walk(child);
+    }
+  }
+  walk(blockNode);
+
+  const blockJoinedText = normalizeText(nodeTextContent(blockNode));
+  const singleLetterItalicCount = italicNodes
+    .map((node) => normalizeText(nodeTextContent(node)))
+    .filter((text) => /^[A-Za-z]$/.test(text)).length;
+
+  const byNodeId = new Map();
+  const placeholdersByNodeId = new Map();
+  const bookPlaceholderMap = {};
+  let bookIndex = 0;
+
+  for (const node of italicNodes) {
+    const text = normalizeText(nodeTextContent(node));
+    const words = text.split(/\s+/).filter(Boolean);
+    const classAttr = String(node.attrs?.class || "").toLowerCase();
+    const siblings = node.parent?.children || [];
+    const idx = siblings.findIndex((child) => child?.id === node.id);
+    const prev = idx > 0 ? siblings[idx - 1] : null;
+    const next = idx >= 0 && idx < siblings.length - 1 ? siblings[idx + 1] : null;
+    const hasAdjacentSupSub = [prev, next].some((n) => n?.type === "element" && (n.tagName === "sup" || n.tagName === "sub"));
+    const hasSupSubClass = /\bsub\b|\bsup\b/.test(classAttr);
+    const hasMathChars = /[=+\-*/]/.test(blockJoinedText) || /\blog\b|\bln\b/i.test(blockJoinedText);
+
+    let classification = "other";
+    if (
+      mathAdjacent
+      || hasAdjacentSupSub
+      || hasSupSubClass
+      || singleLetterItalicCount >= 2
+      || /^[A-Za-z]$/.test(text)
+      || hasMathChars
+    ) {
+      classification = "math";
+    } else if (
+      words.length >= 3
+      && isMostlyTitleCase(text)
+      && BOOK_CONTEXT_HINTS.test(blockJoinedText)
+    ) {
+      classification = "book";
+      const placeholder = `[[BOOK_${bookIndex}]]`;
+      bookIndex += 1;
+      placeholdersByNodeId.set(node.id, placeholder);
+      bookPlaceholderMap[placeholder] = text;
+    } else if (words.length > 0 && words.length <= 4 && /[a-z]/.test(text)) {
+      classification = "emphasis";
+    }
+    byNodeId.set(node.id, classification);
+  }
+
+  return {
+    byNodeId,
+    placeholdersByNodeId,
+    bookPlaceholderMap,
+  };
+}
+
+function collectTextNodes(blockNode, inlineContext = null) {
   const textNodes = [];
+  const emittedBookPlaceholderNodes = new Set();
   function walk(node, parent = null, siblingIndex = 0, context = { underPagebreak: false, underFootnote: false }) {
     if (node.type === "element" && NEVER_TRANSLATE_TAGS.has(node.tagName)) return;
     if (node.type === "element") {
@@ -189,12 +269,28 @@ function collectTextNodes(blockNode) {
     }
     if (node.type === "text") {
       if (!context.underPagebreak && !context.underFootnote && normalizeText(node.text)) {
+        const italicClass = inlineContext?.byNodeId?.get(parent?.id);
+        const placeholder = inlineContext?.placeholdersByNodeId?.get(parent?.id);
+        if (italicClass === "book" && placeholder) {
+          if (emittedBookPlaceholderNodes.has(parent?.id)) return;
+          emittedBookPlaceholderNodes.add(parent?.id);
+          textNodes.push({
+            id: node.id,
+            text: placeholder,
+            parentId: parent?.id || null,
+            parentTag: parent?.tagName || "",
+            siblingIndex,
+            inlineClass: "book",
+          });
+          return;
+        }
         textNodes.push({
           id: node.id,
           text: node.text || "",
           parentId: parent?.id || null,
           parentTag: parent?.tagName || "",
           siblingIndex,
+          inlineClass: italicClass || "other",
         });
       }
       return;
@@ -426,14 +522,15 @@ export function extractTranslationUnits(chapter, diagnostics = null) {
       stats.blockCandidates += 1;
       if (!hasNestedBlockStructure(node)) {
         cleanupBlockNode(node, cleanupContext);
-        const textNodes = collectTextNodes(node);
+        const mathAdjacent = isMathAdjacentBlock(node, collectTextNodes(node));
+        const inlineContext = buildItalicInlineContext(node, { mathAdjacent });
+        const textNodes = collectTextNodes(node, inlineContext);
         if (textNodes.length > 0) {
           const classification = classifyBlockForTranslation(node, textNodes);
           if (!isRelaxedBlockAllowed(node, textNodes, classification)) {
             incrementReason(stats.skippedReasons, "relaxed-block-complex");
             return;
           }
-          const mathAdjacent = isMathAdjacentBlock(node, textNodes);
           const { segmentPayload, segmentMap } = buildSegmentPayload(textNodes, {
             enableProseSemanticMerge: !mathAdjacent,
           });
@@ -450,6 +547,7 @@ export function extractTranslationUnits(chapter, diagnostics = null) {
             segmentMap: isSimple ? [] : segmentMap,
             mode: classification.mode,
             modeReasons: mathAdjacent ? [...classification.reasons, "math-adjacent"] : classification.reasons,
+            bookPlaceholderMap: inlineContext.bookPlaceholderMap,
           });
           if (classification.mode === "simple") stats.simpleUnits += 1;
           if (classification.mode === "complex") stats.complexUnits += 1;
@@ -497,8 +595,20 @@ export function applyTranslationUnits(chapter, translationMap, chapterUnits = []
       continue;
     }
 
+    const restoreBookPlaceholders = (value) => {
+      const map = unit?.bookPlaceholderMap && typeof unit.bookPlaceholderMap === "object"
+        ? unit.bookPlaceholderMap
+        : null;
+      if (!map) return String(value ?? "");
+      let restored = String(value ?? "");
+      for (const [placeholder, source] of Object.entries(map)) {
+        restored = restored.replaceAll(placeholder, source);
+      }
+      return restored;
+    };
+
     if (unit.mode === "simple") {
-      const simpleText = String(translated || "").trim();
+      const simpleText = restoreBookPlaceholders(translated).trim();
       if (!simpleText) {
         stats.skippedInvalidPlaceholder += 1;
         continue;
@@ -554,7 +664,7 @@ export function applyTranslationUnits(chapter, translationMap, chapterUnits = []
         ? mapping.nodeIds
         : (mapping.nodeId ? [mapping.nodeId] : []);
       if (nodeIds.length === 0) continue;
-      const translatedText = segmentsBySid.get(mapping.sid);
+      const translatedText = restoreBookPlaceholders(segmentsBySid.get(mapping.sid));
       const firstNode = nodeIndex.get(nodeIds[0]);
       if (firstNode?.type === "text") {
         firstNode.text = translatedText;

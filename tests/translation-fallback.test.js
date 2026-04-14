@@ -668,6 +668,42 @@ test("epub: italicized book title keeps extractable prose", () => {
   }
 });
 
+test("epub: book-like italic inline can be replaced by BOOK placeholder in translation surface", () => {
+  const chapter = makeChapter("<html><body><p>As in his book <i>The Character of Physical Law</i>, we proceed.</p></body></html>");
+  const units = extractTranslationUnits(chapter);
+  assert.equal(units.length, 1);
+  const unit = units[0];
+  if (unit.mode === "complex") {
+    const payload = JSON.parse(unit.sourceText);
+    const joined = payload.segments.map((segment) => segment.text).join("");
+    assert.equal(joined.includes("[[BOOK_0]]"), true);
+    assert.equal(unit.bookPlaceholderMap["[[BOOK_0]]"], "The Character of Physical Law");
+  } else {
+    assert.equal(unit.sourceText.includes("[[BOOK_0]]"), true);
+  }
+});
+
+test("epub: apply restores BOOK placeholders back to original title text", () => {
+  const chapter = makeChapter("<html><body><p>As in his book <i>The Character of Physical Law</i>, we proceed.</p></body></html>");
+  const units = extractTranslationUnits(chapter);
+  assert.equal(units.length, 1);
+  const unit = units[0];
+  const translationMap = unit.mode === "complex"
+    ? {
+      [unit.key]: JSON.stringify({
+        segments: unit.segmentMap.map((segment, idx) => ({
+          sid: segment.sid,
+          text: idx === 0 ? "正如 [[BOOK_0]] 所述，" : "我们继续。",
+        })),
+      }),
+    }
+    : { [unit.key]: "正如 [[BOOK_0]] 所述，我们继续。" };
+  applyTranslationUnits(chapter, translationMap, units);
+  const html = renderDocument(chapter.document);
+  assert.equal(html.includes("The Character of Physical Law"), true);
+  assert.equal(html.includes("[[BOOK_0]]"), false);
+});
+
 test("epub: prose semantic merge combines short dependent fragment for non-math block", () => {
   const chapter = makeChapter(`
     <html><body>
